@@ -1,0 +1,17 @@
+# upstream clones (re-create with scripts/clone_repos.sh)
+vendor/
+
+# queue data, customer imagery, memory payloads - never in git
+skyvonyx_data/
+jobs/
+memory/
+*.tif
+*.tiff
+*.pt
+*.pth
+
+__pycache__/
+*.pyc
+.pytest_cache/
+.ipynb_checkpoints/
+.env

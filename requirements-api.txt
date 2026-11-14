@@ -1,0 +1,5 @@
+# Intake/delivery API only (CPU host such as Hugging Face Spaces). No torch, no models.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+numpy>=1.26
