@@ -30,10 +30,14 @@ skyvonyx/            the package
   report.py          REPORT_DRAFT.md (accuracy: NOT MEASURED, licences, per-stage timings)
   queue_worker.py    Drive-folder queue, human review gate, requeue after disconnect
   experts/           yolov8, rfdetr, sam2, sam1, fake - one interface, lazy imports
+  datasets.py        labelled scenes (DOTA/COCO) -> YOLO tiles, same slicer+stretch as inference, split by scene
+  evaluate.py        scene-level precision/recall/F1/AP50 vs a gold COCO set; reviewer agreement
 api/main.py          FastAPI intake + status + approved-only delivery (no models here)
 notebooks/skyvonyx_colab_worker.ipynb   the GPU worker, cells 1-8
+notebooks/skyvonyx_train_detector.ipynb train your own detector, measure it twice, publish to models/best.pt
 scripts/clone_repos.sh, bootstrap_colab.sh
 tests/test_pipeline.py                  56 offline checks, fake experts, ~15 s
+tests/test_training_eval.py             13 checks: DOTA parsing, scene splits, tiling, scoring
 vendor/              shallow clones (gitignored): sahi, rf-detr, sam2, segment-anything, gods-eye-view, ECC
 ```
 
@@ -41,8 +45,14 @@ vendor/              shallow clones (gitignored): sahi, rf-detr, sam2, segment-a
 
 **Tests (no GPU, no weights):**
 ```
-python tests/test_pipeline.py
+python tests/test_pipeline.py && python tests/test_training_eval.py
 ```
+
+**Measure accuracy (the only way to replace "NOT MEASURED"):**
+```
+python -m skyvonyx.evaluate --pred jobs/review/<job>/output --gold gold_coco.json     --conf 0.25 --out accuracy.json --note "12 Sentinel-1 IW scenes, Mumbai port, Jun-Sep 2026, labelled by A, checked by B"
+```
+Writes `accuracy.json` and `accuracy.md`. Score reviewer B's labels against reviewer A's with the same command to get agreement.
 
 **Colab worker:** open `notebooks/skyvonyx_colab_worker.ipynb`, set `SKYVONYX_REPO` in cell 2 to wherever you pushed this repo, run cells 1-8. Cell 6 runs real YOLOv8 + SAM 2 on a synthetic UTM scene and prints the scheduler report - you should see the detector load, get evicted, then SAM 2 load, with VRAM numbers for each.
 

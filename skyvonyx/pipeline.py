@@ -219,6 +219,17 @@ def stage_segment(scene: Path, cfg: JobConfig, plan: dict, stitched: dict,
         eligible = sorted(eligible, key=lambda i: -float(scores[i]))[:cfg.segment_max_boxes]
         truncated = 1
 
+    if not eligible:
+        # Every box is below segment_min_score. Loading SAM 2 here would cost
+        # load time and VRAM to segment nothing, and would make the run look as
+        # if SAM 2 had been exercised when it had not.
+        note = f"all {len(boxes)} boxes below segment_min_score={cfg.segment_min_score}"
+        mem.record("segment", "ok", 0.0, masked=0, note=note)
+        out = {"polygons": {}, "requested": 0, "masked": 0,
+               "skipped_low_score": int(skipped_low), "note": note}
+        mem.put_json("segment", fp, out)
+        return out
+
     lo = np.array(plan["stretch_lo"], np.float32)
     hi = np.array(plan["stretch_hi"], np.float32)
     keep = np.array(sorted(eligible), int)
@@ -337,6 +348,8 @@ def run_scene(scene: Path, cfg: JobConfig, out_dir: Path, mem: RunMemory,
         "polygons_from_masks": seg["masked"],
         "segment_requested": seg.get("requested", 0),
         "segment_failed": seg.get("failed", 0),
+        "segment_skipped_low_score": seg.get("skipped_low_score", 0),
+        "segment_note": seg.get("note", ""),
         "per_class": exported["per_class"],
         "outputs": exported["files"],
         "wall_s": round(time.time() - t0, 2),

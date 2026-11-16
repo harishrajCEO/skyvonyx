@@ -17,3 +17,17 @@ __pycache__/
 .env
 
 ~$*
+
+# archives, and Drive/Colab data that must never be committed
+*.zip
+*.onnx
+*.engine
+drive/
+MyDrive/
+models/
+training_runs/
+ds_*/
+eval_job/
+# raw datasets live on Drive; only the licence manifest is tracked here
+datasets/*
+!datasets/LICENCES.md
