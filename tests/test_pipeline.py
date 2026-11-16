@@ -482,10 +482,42 @@ def test_fakes():
     ok("both handle the empty case")
 
 
+def test_small_scene_padding():
+    print("11. scenes smaller than one tile")
+    from skyvonyx.experts import fake as fake_mod
+    from skyvonyx.pipeline import run_job
+    root = Path(tempfile.mkdtemp())
+    try:
+        (root / "input").mkdir()
+        img = np.full((400, 500, 3), 30, np.uint8)
+        img[100:130, 200:260] = 255
+        cv2.imwrite(str(root / "input" / "chip.png"), img)
+        seen = []
+        orig = fake_mod.FakeDetector.__call__
+
+        def spy(self, tiles):
+            seen.extend(t.shape for t in tiles)
+            return orig(self, tiles)
+
+        fake_mod.FakeDetector.__call__ = spy
+        try:
+            s = run_job(root, JobConfig(job_id="chip", detector="fake", segmenter="none", tile=1024),
+                        verbose=False)
+        finally:
+            fake_mod.FakeDetector.__call__ = orig
+        assert seen == [(1024, 1024, 3)], seen
+        ok("a 500x400 scene is padded to 1024x1024, not upscaled by the detector")
+        gj = json.loads(next((root / "output").glob("*.geojson")).read_text())
+        assert gj["features"][0]["properties"]["px_bbox"] == [200.0, 100.0, 260.0, 130.0]
+        ok("padding leaves the exported coordinates on the object")
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def main() -> int:
     for fn in (test_slicing, test_render, test_stitching, test_geo, test_residency,
                test_memory, test_config, test_mask_normalisation, test_end_to_end,
-               test_fakes):
+               test_fakes, test_small_scene_padding):
         fn()
     print(f"\nALL {len(PASS)} CHECKS PASSED")
     return 0

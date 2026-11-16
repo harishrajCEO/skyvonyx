@@ -15,7 +15,9 @@ Context document: `Downloads/skyvonyx_master_context.md` (not in this repo). Rea
 - One expert resident on the GPU at a time (`max_resident_experts=1`). A new model goes through `ResidencyManager`, with a real `unload()`.
 - Every stage reads from and writes to `RunMemory`; a new stage gets a fingerprint entry in `JobConfig.stage_fingerprint`.
 - No secrets in code or notebooks. No customer imagery in git (`.gitignore` covers `*.tif`, `jobs/`, `memory/`).
-- Civil geospatial monitoring only. No face recognition, no tracking of individuals, no CCTV ingestion.
+- Every training run declares `dataset_ids`; never mark a model commercial-ok by hand. `licence_status()` fails closed, and only a person who read the licence may flip `verified` in `DATASET_LICENCES` (with a row in `datasets/LICENCES.md`).
+- Training and inference use the same `tile` and `sensor`. Chips smaller than a tile are padded, never upscaled.
+- Civil geospatial monitoring only (see `docs/ACCEPTABLE_USE.md`). No face recognition, no tracking of individuals, no CCTV ingestion.
 - Licences: ultralytics AGPL-3.0; DOTA academic; RF-DETR Plus sizes PML 1.0 (base Apache-2.0); SAM Apache-2.0; SAHI MIT. Flag any new dependency's licence in the PR.
 
 ## Layout

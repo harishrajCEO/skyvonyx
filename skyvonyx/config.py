@@ -18,6 +18,15 @@ STAGE_ORDER = ("plan", "detect", "stitch", "segment", "export")
 
 IMG_EXT = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
 
+# How pixels become the 8-bit RGB the detector sees. Training and inference
+# MUST use the same value, or the model is shown a different-looking image in
+# production than it learned on.
+SENSORS = {
+    "optical": "multi-band reflectance or 8-bit RGB: per-band 2/98 percentile stretch",
+    "sar": "LINEAR backscatter GeoTIFF (e.g. Sentinel-1 GRD/sigma0): 10*log10 to dB, then stretch",
+    "sar_rendered": "SAR already rendered to 8-bit (HRSID, SSDD chips): stretch only, no dB",
+}
+
 
 @dataclass
 class JobConfig:
@@ -36,7 +45,7 @@ class JobConfig:
     tile: int = 1024
     overlap: float = 0.2
     bands: list = field(default_factory=lambda: [1, 2, 3])
-    sensor: str = "optical"             # "optical" | "sar"
+    sensor: str = "optical"             # a key of SENSORS
     min_tile_std: float = 2.0           # below this a tile is treated as empty and skipped
 
     # ---- detection ----
@@ -62,6 +71,10 @@ class JobConfig:
     # filled by load(): keys present in job.json that this version does not know.
     # Surfaced in the summary so a typo'd setting is visible instead of ignored.
     unknown_keys: list = field(default_factory=list)
+
+    def __post_init__(self):
+        if self.sensor not in SENSORS:
+            raise ValueError(f"sensor {self.sensor!r} must be one of {sorted(SENSORS)}")
 
     @property
     def overlap_px(self) -> int:

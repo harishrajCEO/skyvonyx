@@ -36,8 +36,11 @@ api/main.py          FastAPI intake + status + approved-only delivery (no models
 notebooks/skyvonyx_colab_worker.ipynb   the GPU worker, cells 1-8
 notebooks/skyvonyx_train_detector.ipynb train your own detector, measure it twice, publish to models/best.pt
 scripts/clone_repos.sh, bootstrap_colab.sh
-tests/test_pipeline.py                  56 offline checks, fake experts, ~15 s
-tests/test_training_eval.py             13 checks: DOTA parsing, scene splits, tiling, scoring
+tests/test_pipeline.py                  58 offline checks, fake experts, ~15 s
+tests/test_training_eval.py             23 checks: label formats, scene splits, tiling, licences, scoring
+datasets/LICENCES.md                    which training sets may go into a sold model (fail-closed check in code)
+docs/GOLD_SET.md                        building the 20-scene Sentinel-1 ship test set and scoring it
+docs/ACCEPTABLE_USE.md                  objects-only scope
 vendor/              shallow clones (gitignored): sahi, rf-detr, sam2, segment-anything, gods-eye-view, ECC
 ```
 
@@ -78,6 +81,14 @@ Results and GeoJSON are served **only for jobs in `done/`** (a human created `AP
 
 1. **VRAM.** `ResidencyManager(max_resident=1)` - activating the segmenter evicts the detector (`unload()` + `gc.collect()` + `empty_cache()`), and every activation records VRAM before/after/peak into `summary.json["scheduler"]`. Set `max_resident_experts: 2` in a job to keep both loaded on a bigger GPU.
 2. **Disk.** `RunMemory` keys every stage payload by scene content + a stage fingerprint. Change `conf` and detect/stitch/segment/export recompute but the slice plan is reused; change `merge_threshold` and only stitch onward recomputes. The ledger (`memory/<job>/ledger.jsonl`) is the per-stage timing record the master context asks for.
+
+## Sensor setting (must match between training and inference)
+
+| `sensor` | input | rendering |
+|---|---|---|
+| `optical` | multi-band reflectance or 8-bit RGB | per-band 2/98 percentile stretch |
+| `sar` | linear backscatter GeoTIFF (Sentinel-1 GRD / sigma0) | 10*log10 to dB, then stretch |
+| `sar_rendered` | SAR already rendered to 8-bit (HRSID, SSDD chips) | stretch only |
 
 ## What the outputs mean
 

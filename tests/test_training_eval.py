@@ -160,6 +160,87 @@ def test_evaluate(tmp: Path):
     ok("a labeller scored against themselves agrees 100% (reviewer-agreement path)")
 
 
+def test_licences():
+    print("6. licence check (fails closed)")
+    ls = datasets.licence_status
+    assert ls(["sentinel-1", "skyvonyx-labels"])["commercial_ok"] is True
+    ok("own labels on Sentinel-1 are commercial-ok")
+    for flagged in ("dota", "xview"):
+        r = ls(["sentinel-1", flagged])
+        assert r["commercial_ok"] is False and any("non-commercial" in b for b in r["blocking"])
+    ok("any non-commercial set (DOTA, xView) blocks commercial-ok, even mixed with clean data")
+    for unverified in ("hrsid", "ssdd", "xview3-sar"):
+        r = ls([unverified])
+        assert r["commercial_ok"] is False and any("not verified" in b for b in r["blocking"])
+    ok("unverified sets (HRSID, SSDD, xView3-SAR) block until someone checks the terms")
+    assert ls(["sentinel-l"])["commercial_ok"] is False, "a typo must not pass"
+    assert ls([])["commercial_ok"] is False, "undeclared provenance must not pass"
+    assert ls(["Sentinel-1 "])["commercial_ok"] is True, "case/space-insensitive ids"
+    ok("typos and undeclared sources block; ids are case-insensitive")
+
+    md = (Path(__file__).resolve().parents[1] / "datasets" / "LICENCES.md").read_text(encoding="utf-8")
+    missing = [k for k in datasets.DATASET_LICENCES if f"`{k}`" not in md]
+    assert not missing, f"LICENCES.md is missing registry ids: {missing}"
+    ok("datasets/LICENCES.md lists every id in the code registry")
+
+
+def test_sar_chip_handling(tmp: Path):
+    print("7. SAR chip datasets (HRSID/SSDD style)")
+    from skyvonyx.config import JobConfig
+    JobConfig(job_id="x", sensor="sar_rendered")
+    try:
+        JobConfig(job_id="x", sensor="SAR")
+        raise AssertionError("bad sensor accepted")
+    except ValueError:
+        pass
+    ok("sensor must be optical | sar | sar_rendered; anything else is rejected")
+
+    # 800px grey chips cut from 3 parent scenes, HRSID-style names
+    chips = []
+    for parent in ("P0001", "P0002", "P0003"):
+        for k in range(4):
+            img = np.full((800, 800), 40, np.uint8) + (np.random.default_rng(k).integers(0, 30, (800, 800))).astype(np.uint8)
+            img[300:330, 400:440] = 250
+            path = tmp / f"{parent}_{k}_800_{k*800}_{k*800+800}.png"
+            cv2.imwrite(str(path), img)
+            chips.append(path)
+
+    vocdir = tmp / "Annotations"; vocdir.mkdir()
+    for path in chips:
+        (vocdir / (path.stem + ".xml")).write_text(
+            f"<annotation><filename>{path.name}</filename><object><name>ship</name>"
+            f"<bndbox><xmin>400</xmin><ymin>300</ymin><xmax>440</xmax><ymax>330</ymax></bndbox>"
+            f"</object></annotation>")
+    scenes = datasets.load_voc(vocdir, tmp)
+    assert len(scenes) == 12 and scenes[0].names == ["ship"]
+    assert scenes[0].boxes[0].tolist() == [400, 300, 440, 330]
+    ok("Pascal-VOC (SSDD-style) annotations load")
+
+    out = tmp / "sards"
+    card = datasets.build_dataset(
+        scenes, out, ["ship"], spec=datasets.TileSpec(tile=1024, sensor="sar_rendered"),
+        dataset_ids=["hrsid"], group_fn=lambda stem: stem.split("_")[0],
+        val_frac=0.34, test_frac=0.33)
+    assert card["split_groups"] == 3
+    by_parent = {}
+    for split_dir in (out / "images").iterdir():
+        for png in split_dir.glob("*.png"):
+            by_parent.setdefault(png.stem.split("_")[0], set()).add(split_dir.name)
+    assert all(len(v) == 1 for v in by_parent.values()), by_parent
+    ok("chips from one parent scene always share a split (no neighbour leakage)")
+
+    png = next((out / "images").rglob("*.png"))
+    h, w = cv2.imread(str(png)).shape[:2]
+    assert (w, h) == (1024, 1024), (w, h)
+    lbl = (out / "labels" / png.parent.name / (png.stem + ".txt")).read_text().split()
+    assert abs(float(lbl[1]) * 1024 - 420) < 1 and abs(float(lbl[3]) * 1024 - 40) < 1
+    ok("800px chips padded to 1024 at native scale; labels still land on the ship")
+
+    assert card["licence_status"]["commercial_ok"] is False
+    assert card["dataset_ids"] == ["hrsid"]
+    ok("the dataset card records the sources and refuses commercial-ok for HRSID")
+
+
 def main() -> int:
     tmp = Path(tempfile.mkdtemp())
     try:
@@ -168,6 +249,8 @@ def main() -> int:
         test_clip()
         test_build_dataset(tmp)
         test_evaluate(tmp)
+        test_licences()
+        test_sar_chip_handling(tmp)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     print(f"\nALL {len(PASS)} CHECKS PASSED")

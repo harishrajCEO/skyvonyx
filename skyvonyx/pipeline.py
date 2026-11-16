@@ -101,6 +101,16 @@ def stage_detect(scene: Path, cfg: JobConfig, plan: dict, mem: RunMemory,
                         if is_empty_tile(rgb, cfg.min_tile_std):
                             skipped += 1
                             continue
+                        if rgb.shape[0] < cfg.tile or rgb.shape[1] < cfg.tile:
+                            # A tile smaller than `tile` (a scene or chip smaller than
+                            # one tile) would be upscaled by the detector's letterbox,
+                            # showing objects bigger than in training. Pad bottom/right
+                            # instead - the same as datasets.TileSpec(pad_to_tile=True).
+                            # Boxes stay in tile-local pixels; restitch clips the pad.
+                            canvas = np.zeros((max(rgb.shape[0], cfg.tile),
+                                               max(rgb.shape[1], cfg.tile), 3), np.uint8)
+                            canvas[:rgb.shape[0], :rgb.shape[1]] = rgb
+                            rgb = canvas
                         tiles.append(rgb)
                         offs.append((col, row))
                     t_read += time.time() - t0

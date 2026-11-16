@@ -33,6 +33,70 @@ from .raster import RasterSource, is_empty_tile, stretch_limits, to_uint8_rgb
 from .slicing import slice_plan
 
 
+# ---------------------------------------------------------- licence registry
+# Source of truth for "may a model trained on this be sold?". datasets/LICENCES.md
+# is the human-readable copy; a test keeps the two in sync.
+#
+#   commercial: True  -> terms allow commercial use
+#               False -> non-commercial / academic only (blocks commercial-ok)
+#               None  -> not yet checked (also blocks: unknown is not "ok")
+#   verified:   a person on the team read the actual licence text and recorded
+#               it in LICENCES.md. Only verified=True + commercial=True passes.
+#
+# To clear a dataset: read its licence, update LICENCES.md with the quote and
+# date, then set commercial/verified here. Do not flip verified without that.
+DATASET_LICENCES: dict[str, dict] = {
+    "dota":        {"commercial": False, "verified": False,
+                    "terms": "reported academic-use-only (Google Earth imagery) - confirm"},
+    "xview":       {"commercial": False, "verified": False,
+                    "terms": "reported CC BY-NC-SA 4.0 - confirm"},
+    "hrsid":       {"commercial": None, "verified": False,
+                    "terms": "UNVERIFIED - read the release terms before any commercial use"},
+    "ssdd":        {"commercial": None, "verified": False,
+                    "terms": "UNVERIFIED - several redistributions exist; check the one you used"},
+    "ls-ssdd-v1":  {"commercial": None, "verified": False, "terms": "UNVERIFIED"},
+    "xview3-sar":  {"commercial": None, "verified": False, "terms": "UNVERIFIED"},
+    "sardet-100k": {"commercial": None, "verified": False,
+                    "terms": "UNVERIFIED - aggregates other sets, inherits the strictest terms"},
+    "sen1floods11": {"commercial": None, "verified": False, "terms": "UNVERIFIED"},
+    "sentinel-1":  {"commercial": True, "verified": True,
+                    "terms": "Copernicus Sentinel data: free, full and open incl. commercial; "
+                             "attribute 'Contains modified Copernicus Sentinel data [year]'"},
+    "sentinel-2":  {"commercial": True, "verified": True,
+                    "terms": "Copernicus Sentinel data: as sentinel-1"},
+    "skyvonyx-labels": {"commercial": True, "verified": True,
+                        "terms": "labels made by the Skyvonyx team; the IMAGERY under them "
+                                 "still needs its own entry (e.g. sentinel-1)"},
+    "customer-imagery": {"commercial": None, "verified": False,
+                         "terms": "governed by the customer contract; default no training reuse"},
+}
+
+
+def licence_status(dataset_ids: list[str]) -> dict:
+    """Verdict for a set of training sources. Fails closed.
+
+    commercial_ok is True only if there is at least one source and every source
+    is in the registry, verified, and commercial. Anything else - a
+    non-commercial set, an unchecked set, a typo'd id, an empty list - blocks.
+    """
+    blocking, notes = [], {}
+    for raw in dataset_ids:
+        key = raw.strip().lower()
+        entry = DATASET_LICENCES.get(key)
+        if entry is None:
+            blocking.append(f"{raw}: not in the licence registry")
+            continue
+        notes[key] = entry["terms"]
+        if entry["commercial"] is False:
+            blocking.append(f"{key}: non-commercial terms")
+        elif entry["commercial"] is None or not entry["verified"]:
+            blocking.append(f"{key}: licence not verified")
+    if not dataset_ids:
+        blocking.append("no dataset_ids declared - provenance unknown")
+    return {"commercial_ok": not blocking, "blocking": blocking, "terms": notes,
+            "note": "Data terms only. The detector licence (ultralytics AGPL-3.0) is separate."}
+
+
 # ----------------------------------------------------------------- label I/O
 @dataclass
 class SceneLabels:
@@ -82,6 +146,31 @@ def load_coco(coco_json: str | Path, images_dir: str | Path) -> list[SceneLabels
         names = [cats.get(a["category_id"], str(a["category_id"])) for a in anns]
         out.append(SceneLabels(Path(images_dir) / img["file_name"],
                                np.array(boxes, np.float32).reshape(-1, 4), names))
+    return out
+
+
+def load_voc(xml_dir: str | Path, images_dir: str | Path) -> list[SceneLabels]:
+    """Pascal VOC XML, one file per image - the format SSDD is commonly distributed in."""
+    import xml.etree.ElementTree as ET
+
+    images = {p.stem: p for p in Path(images_dir).iterdir()
+              if p.suffix.lower() in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}}
+    out = []
+    for xml in sorted(Path(xml_dir).glob("*.xml")):
+        root = ET.parse(xml).getroot()
+        stem = Path(root.findtext("filename") or xml.stem).stem
+        if stem not in images:
+            stem = xml.stem
+        if stem not in images:
+            continue
+        boxes, names = [], []
+        for obj in root.iter("object"):
+            bb = obj.find("bndbox")
+            if bb is None:
+                continue     # rotated-only annotations: skip rather than guess
+            boxes.append([float(bb.findtext(k)) for k in ("xmin", "ymin", "xmax", "ymax")])
+            names.append((obj.findtext("name") or "").strip())
+        out.append(SceneLabels(images[stem], np.array(boxes, np.float32).reshape(-1, 4), names))
     return out
 
 
@@ -138,6 +227,11 @@ class TileSpec:
     min_px: float = 4.0
     min_tile_std: float = 2.0
     negative_frac: float = 0.1     # share of object-free tiles kept, so the model learns "nothing here"
+    # Chip datasets (HRSID 800px, SSDD ~500px) are smaller than the tile. The
+    # trainer resizes every image's long side to imgsz, so an 800px chip would
+    # be blown up 1.28x and the model would learn ships 28% bigger than it will
+    # see at inference. Padding to the full tile keeps native scale.
+    pad_to_tile: bool = True
 
 
 def tile_scene(scene: SceneLabels, class_ids: dict[str, int], out_root: Path, split: str,
@@ -168,9 +262,16 @@ def tile_scene(scene: SceneLabels, class_ids: dict[str, int], out_root: Path, sp
                 if not _keep_negative(name, spec.negative_frac):
                     continue
                 stats["negatives"] += 1
+            out_w, out_h = w, h
+            if spec.pad_to_tile and (w < spec.tile or h < spec.tile):
+                canvas = np.zeros((max(h, spec.tile), max(w, spec.tile), 3), np.uint8)
+                canvas[:h, :w] = rgb
+                rgb, out_w, out_h = canvas, canvas.shape[1], canvas.shape[0]
+                stats["padded"] = stats.get("padded", 0) + 1
             cv2.imwrite(str(img_dir / f"{name}.png"), rgb[..., ::-1])
-            lines = [f"{cls[i]} {(b[0] + b[2]) / 2 / w:.6f} {(b[1] + b[3]) / 2 / h:.6f} "
-                     f"{(b[2] - b[0]) / w:.6f} {(b[3] - b[1]) / h:.6f}"
+            # normalise by the written image size, so padding does not shift labels
+            lines = [f"{cls[i]} {(b[0] + b[2]) / 2 / out_w:.6f} {(b[1] + b[3]) / 2 / out_h:.6f} "
+                     f"{(b[2] - b[0]) / out_w:.6f} {(b[3] - b[1]) / out_h:.6f}"
                      for b, i in zip(local, idx)]
             (lbl_dir / f"{name}.txt").write_text("\n".join(lines), encoding="utf-8")
             stats["tiles"] += 1
@@ -182,8 +283,18 @@ def tile_scene(scene: SceneLabels, class_ids: dict[str, int], out_root: Path, sp
 # ------------------------------------------------------------------ dataset
 def build_dataset(scenes: list[SceneLabels], out_root: str | Path, classes: list[str],
                   spec: TileSpec | None = None, val_frac: float = 0.15, test_frac: float = 0.15,
-                  source: str = "", licence: str = "UNKNOWN - check before training") -> dict:
-    """Tile every scene into YOLO format, split by scene. Returns the dataset card."""
+                  source: str = "", dataset_ids: list[str] | None = None,
+                  group_fn=None) -> dict:
+    """Tile every scene into YOLO format, split by scene. Returns the dataset card.
+
+    dataset_ids: keys of DATASET_LICENCES naming every source of images or
+        labels. Required to get a licence verdict; omitted means "unknown",
+        which can never be commercial-ok.
+    group_fn: maps an image stem to the scene it was cut from. Chip datasets
+        cut one big scene into many chips; splitting by chip would put
+        neighbours from the same scene in train and test. HRSID-style names
+        like "P0001_0_800_7200_8000" group with `lambda s: s.split("_")[0]`.
+    """
     spec = spec or TileSpec()
     out_root = Path(out_root)
     out_root.mkdir(parents=True, exist_ok=True)
@@ -193,7 +304,8 @@ def build_dataset(scenes: list[SceneLabels], out_root: str | Path, classes: list
     gold = {"images": [], "annotations": [],
             "categories": [{"id": i, "name": c} for i, c in enumerate(classes)]}
     for scene in scenes:
-        split = scene_split(scene.scene_id, val_frac, test_frac)
+        group = group_fn(scene.scene_id) if group_fn else scene.scene_id
+        split = scene_split(group, val_frac, test_frac)
         stats = tile_scene(scene, class_ids, out_root, split, spec)
         per_scene.append(stats)
         if split == "test":
@@ -227,7 +339,10 @@ def build_dataset(scenes: list[SceneLabels], out_root: str | Path, classes: list
         "classes": classes, "tile": spec.tile, "overlap": spec.overlap, "sensor": spec.sensor,
         "bands": spec.bands, "min_visible": spec.min_visible, "negative_frac": spec.negative_frac,
         "split_rule": f"sha256(scene_id) - val {val_frac}, test {test_frac}, by scene",
-        "source": source, "licence": licence, "splits": totals,
+        "source": source, "dataset_ids": list(dataset_ids or []),
+        "licence_status": licence_status(dataset_ids or []),
+        "split_groups": len({(group_fn or (lambda x: x))(sc.scene_id) for sc in scenes}),
+        "splits": totals,
         "dropped_unknown_class": sum(s["dropped_unknown_class"] for s in per_scene),
         "scenes": per_scene,
         "warning": "Train at this tile size and run inference with the same tile, overlap "
